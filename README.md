@@ -15,7 +15,7 @@ Only **target-agnostic host tools** — the binary distribution matrix is just
 
 | tool | source build / repackage | license |
 |---|---|---|
-| `qemu` | build from NEWSLabNTU/qemo fork (patched) | GPL ✓ |
+| `qemu` | build from NEWSLabNTU/qemu fork (patched) | GPL ✓ |
 | `arm-none-eabi-gcc` | repackage ARM upstream | GPL ✓ |
 | `riscv-none-elf-gcc` | repackage upstream | GPL ✓ |
 | `zenohd` | `cargo install` from zenoh 1.7.2 | Apache/EPL ✓ |

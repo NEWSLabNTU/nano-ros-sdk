@@ -21,7 +21,10 @@ if [ "${host#linux-}" != "$host" ]; then
         libpixman-1-dev zstd flex bison
 fi
 
-git clone --depth 1 --branch "v${version}" https://github.com/NEWSLabNTU/qemo qemu-src
+# Patched fork branch (no tags upstream); keep in sync with [tool.qemu.source]
+# ref in nano-ros's nros-sdk-index.toml.
+git clone --depth 1 --branch nano-ros-v11.0.0-patches \
+    https://github.com/NEWSLabNTU/qemu qemu-src
 cd qemu-src
 ./configure --prefix="$prefix" \
     --target-list=arm-softmmu,riscv64-softmmu \
