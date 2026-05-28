@@ -1,0 +1,4 @@
+# Build workspaces + outputs produced by scripts/build-*.sh (CI rebuilds them).
+/dist/
+/out/
+*-src/

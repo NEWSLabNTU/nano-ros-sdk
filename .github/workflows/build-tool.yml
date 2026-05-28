@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tool:
-        description: "tool name (qemu, arm-none-eabi-gcc, riscv-none-elf-gcc, zenohd, openocd)"
+        description: "tool name (qemu, arm-none-eabi-gcc, riscv-none-elf-gcc, zenohd, openocd, xrce-agent, cyclonedds)"
         required: true
       version:
         description: "version, e.g. 11.0.0-nros2"
