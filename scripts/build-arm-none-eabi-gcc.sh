@@ -32,9 +32,16 @@ mkdir -p "$root/dist" "$root/work"
 cd "$root/work"
 
 curl -fL --retry 3 -o tc.tar.xz "$url"
-tar -xf tc.tar.xz # extracts to ${asset}/ (bin/ lib/ arm-none-eabi/ share/ …)
+tar -xf tc.tar.xz # ARM's top-dir name varies by release/arch — glob it, don't assume.
+
+topdir="$(find . -maxdepth 1 -type d -name 'arm-gnu-toolchain-*' | head -1)"
+if [ -z "$topdir" ]; then
+    echo "build-arm-none-eabi-gcc: no extracted toolchain dir; got:" >&2
+    ls -la >&2
+    exit 1
+fi
 
 # Pack the CONTENTS so it unpacks into $NROS_HOME/sdk/arm-none-eabi-gcc/<ver>/.
 tar --use-compress-program "zstd -19 -T0" \
-    -cf "$root/dist/arm-none-eabi-gcc-${host}.tar.zst" -C "$asset" .
+    -cf "$root/dist/arm-none-eabi-gcc-${host}.tar.zst" -C "$topdir" .
 echo "built dist/arm-none-eabi-gcc-${host}.tar.zst"
