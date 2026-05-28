@@ -29,7 +29,8 @@ cmake -S "$src" -B "$build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DUAGENT_BUILD_EXECUTABLE=ON \
     -DUAGENT_P2P_PROFILE=OFF \
-    -DUAGENT_LOGGER_PROFILE=OFF
+    -DUAGENT_LOGGER_PROFILE=OFF \
+    -DUAGENT_SOCKETCAN_PROFILE=OFF  # Linux-CAN transport: unused by nano-ros + breaks the macOS build (v2.4.3 compiles CanAgentLinux unconditionally)
 # The Agent CMake is a superbuild: `cmake --build` builds Fast-CDR/Fast-DDS (into
 # `build/temp_install`) then the Agent (into the build tree). There is no
 # top-level `install` target, and the built binary's RUNPATH is absolute — so we
