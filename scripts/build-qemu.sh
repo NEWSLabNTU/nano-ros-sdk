@@ -193,8 +193,10 @@ WRAP
     # reason the macOS half went unfixed while Linux shipped.
     for b in "${bins[@]}"; do
         out="$(DYLD_PRINT_LIBRARIES=1 "$b" --version 2>&1 >/dev/null)" || rc=1
-        for base in $(ls "$prefix/lib"); do
-            case "$base" in *.real) continue ;; esac
+        # Only the dylibs WE bundled — qemu installs libfdt.a and pkgconfig/
+        # into the same lib/, and a bare listing treats those as sonames.
+        for f in "$prefix"/lib/*.dylib; do
+            base="$(basename "$f")"
             case "$out" in
                 *"$prefix/lib/$base"*) ;;
                 *) echo "bundle: $b did not load $base from the bundle" >&2; rc=1 ;;
