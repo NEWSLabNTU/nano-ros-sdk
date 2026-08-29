@@ -28,16 +28,27 @@ else
     brew install libslirp pkg-config ninja pixman glib zstd
 fi
 
-# Configure flags mirror just/qemu-baremetal.just's setup-qemu so the prebuilt
-# == the source build.
 git clone --depth 1 --branch "$upstream" \
     https://github.com/NEWSLabNTU/qemu qemu-src
 cd qemu-src
-./configure --prefix="$prefix" \
-    --target-list=arm-softmmu,riscv64-softmmu \
-    --enable-slirp \
-    --disable-docs --disable-tools --disable-gtk --disable-vnc \
-    --disable-sdl --disable-spice
+
+# The configure flags have ONE home: `[tool.qemu.source].configure` in
+# nano-ros's nros-sdk-index.toml, which is also the recipe `nros setup` runs
+# when it builds from source. They used to be duplicated here, with a gate in
+# nano-ros diffing this script against a VENDORED COPY of itself — and the copy
+# drifted in five of nine files while the gate watched one line. Read the SSOT.
+index_url="https://raw.githubusercontent.com/NEWSLabNTU/nano-ros/main/nros-sdk-index.toml"
+configure_line="$(curl -fsSL "$index_url" |
+    sed -n '/^\[tool\.qemu\.source\]/,/^\[/p' |
+    sed -n 's/^configure *= *"\(.*\)"$/\1/p' | head -1)"
+[ -n "$configure_line" ] || {
+    echo "error: no [tool.qemu.source].configure in $index_url" >&2
+    exit 1
+}
+# `{prefix}` is the index's placeholder for the install prefix.
+configure_cmd="${configure_line//\{prefix\}/$prefix}"
+echo "configure (from the index): $configure_cmd"
+eval "$configure_cmd"
 make -j"$(getconf _NPROCESSORS_ONLN)"
 make install
 cd "$root"
