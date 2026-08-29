@@ -126,6 +126,91 @@ bundle_linux_libs() {
     echo "bundled $(ls "$prefix"/lib/*.so* | wc -l) libs into lib/ (rpath \$ORIGIN/../lib)"
 }
 
+# --- issue 0879 — the same, for macOS ------------------------------------------
+# Different mechanism, same goal. rpath is not usable here: rewriting a Mach-O
+# invalidates its signature on arm64, so it would need a `codesign -s - -f` pass
+# per file. `DYLD_LIBRARY_PATH` substitutes by LEAF NAME even for absolute
+# install names, so a launcher that points it at ../lib covers the whole closure
+# while modifying no binary — the idiom build-xrce-agent.sh already uses here.
+bundle_macos_libs() {
+    local prefix="$1"
+    local bins=("$prefix"/bin/qemu-system-*)
+    local queue="" seen="" dylib base b out rc=0
+
+    mkdir -p "$prefix/lib"
+    # `otool -L` prints only DIRECT dependencies (unlike ldd), so this needs a
+    # real worklist to reach the closure.
+    for b in "${bins[@]}"; do
+        queue="$queue $(otool -L "$b" | awk 'NR>1 {print $1}')"
+    done
+    while [ -n "${queue// /}" ]; do
+        set -- $queue
+        dylib="$1"
+        shift
+        queue="$*"
+        case " $seen " in *" $dylib "*) continue ;; esac
+        seen="$seen $dylib"
+        case "$dylib" in
+            # /usr/lib and /System are the OS's own, and are not even files on
+            # disk — they live in the dyld shared cache. Never bundle them.
+            /usr/lib/* | /System/*) continue ;;
+            /*) ;;
+            *)
+                # @rpath/@loader_path would need the load commands resolved.
+                # Fail rather than skip: a silent skip ships a dist that is
+                # bundled everywhere except the one lib that was unhandled.
+                echo "bundle: non-absolute install name '$dylib' — unhandled" >&2
+                exit 1
+                ;;
+        esac
+        base="$(basename "$dylib")"
+        [ -e "$prefix/lib/$base" ] && continue
+        cp "$dylib" "$prefix/lib/$base"
+        chmod u+w "$prefix/lib/$base"
+        queue="$queue $(otool -L "$prefix/lib/$base" | awk 'NR>1 {print $1}')"
+    done
+
+    # The launcher derives its own name, so one body serves every binary.
+    for b in "${bins[@]}"; do
+        base="$(basename "$b")"
+        mv "$b" "$prefix/lib/$base.real"
+        cat > "$b" <<'WRAP'
+#!/bin/sh
+# nano-ros-sdk relocatable launcher — resolves bundled dylibs next to itself.
+# `env` takes the assignment as an ARGUMENT, so SIP stripping DYLD_* from a
+# protected binary's environment cannot lose it in transit.
+here="$(cd "$(dirname "$0")" && pwd)"
+libdir="$here/../lib"
+exec env DYLD_LIBRARY_PATH="$libdir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+    "$libdir/$(basename "$0").real" "$@"
+WRAP
+        chmod +x "$b"
+    done
+
+    # Prove the bundle WINS. `DYLD_PRINT_LIBRARIES` names every image actually
+    # loaded, so this distinguishes "resolved from the bundle" from "the build
+    # host happens to have Homebrew" — which is the whole failure mode, and the
+    # reason the macOS half went unfixed while Linux shipped.
+    for b in "${bins[@]}"; do
+        out="$(DYLD_PRINT_LIBRARIES=1 "$b" --version 2>&1 >/dev/null)" || rc=1
+        for base in $(ls "$prefix/lib"); do
+            case "$base" in *.real) continue ;; esac
+            case "$out" in
+                *"$prefix/lib/$base"*) ;;
+                *) echo "bundle: $b did not load $base from the bundle" >&2; rc=1 ;;
+            esac
+            case "$out" in
+                *"/opt/homebrew/"*"/$base"* | *"/usr/local/"*"/$base"*)
+                    echo "bundle: $b still loads $base from Homebrew" >&2
+                    rc=1
+                    ;;
+            esac
+        done
+    done
+    [ "$rc" -eq 0 ] || exit 1
+    echo "bundled $(ls "$prefix"/lib/*.dylib | wc -l) dylibs into lib/ (DYLD_LIBRARY_PATH launcher)"
+}
+
 if [ "${host#linux-}" != "$host" ]; then
     bundle_linux_libs "$prefix"
     # A dist that boots is the point; --version alone would pass on a build host
@@ -133,11 +218,12 @@ if [ "${host#linux-}" != "$host" ]; then
     "$prefix/bin/qemu-system-arm" --version >/dev/null
     "$prefix/bin/qemu-system-arm" -M none -netdev help | grep -qw user \
         || { echo "error: slirp (-netdev user) missing from the build"; exit 1; }
+else
+    bundle_macos_libs "$prefix"
+    "$prefix/bin/qemu-system-arm" --version >/dev/null
+    "$prefix/bin/qemu-system-arm" -M none -netdev help | grep -qw user \
+        || { echo "error: slirp (-netdev user) missing from the build"; exit 1; }
 fi
-# macOS is NOT bundled: its deps are Homebrew absolute paths (glib, pixman,
-# slirp, …) and there is no macOS runner in nano-ros CI to verify a change
-# against, so an untested install_name_tool pass would ship worse than the
-# documented Homebrew requirement. Tracked in nano-ros issue 0879.
 
 # Tarball = the prefix CONTENTS (bin/, share/, …) so it unpacks straight into
 # $NROS_HOME/sdk/qemu/<version>/ — the install-layout contract.
