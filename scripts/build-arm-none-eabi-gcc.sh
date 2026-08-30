@@ -60,6 +60,93 @@ fi
 # launcher, which is proportionate for qemu's handful of `qemu-system-*` and
 # not for a 31-binary toolchain; macOS host support is deferred anyway
 # (nano-ros phase-401 W4).
+# --- nano-ros issue 0929 — give gdb the Python stdlib it cannot find ----------
+#
+# ARM links a CPython into gdb STATICALLY and bakes `sys.prefix` to a path from
+# their own build container. On any other machine the interpreter finds no
+# stdlib and aborts during init — and it is a FATAL error, so gdb dies with it:
+#
+#   Could not find platform independent libraries <prefix>
+#   Fatal Python error: init_fs_encoding: failed to get the Python codec
+#     of the filesystem encoding
+#
+# The symptom is a debugger that exits 0 and prints NOTHING, which reads as
+# "installed fine" — measured on Ubuntu 22.04, where the compiler works and the
+# debugger does not.
+#
+# Fix: ship the matching stdlib inside the dist and point PYTHONHOME at it from
+# a launcher. Pure Python only — no build, no compiler, ~1.6 MB compressed.
+#
+# WHAT THIS CANNOT FIX, and it is ARM's decision rather than a gap here: their
+# x86_64 gdb exports ZERO Python C-API symbols (`nm -D` finds none), so a `.so`
+# extension module can never load into it. `import struct` and `import math`
+# therefore fail no matter what stdlib is present — including on a host with a
+# full system python3.8. The 34 modules they built in are the ceiling, and this
+# reaches it rather than falling short of it.
+ship_gdb_python() {
+    local prefix="$1"
+    local gdb="$prefix/bin/arm-none-eabi-gdb"
+    [ -x "$gdb" ] || { echo "gdb-python: no $gdb" >&2; exit 1; }
+
+    # Derive the minor from the binary rather than hardcoding it: ARM bumps this
+    # between releases, and a stdlib for the wrong minor would install cleanly
+    # and fail at run time. Unknown minor FAILS the build — loudly beats
+    # shipping a mismatch.
+    local minor patch
+    minor="$(strings -a "$gdb" | grep -oE 'python3\.[0-9]+' | head -1)"
+    case "$minor" in
+        python3.8) patch="3.8.11" ;;   # matches the interpreter in 13.2.rel1
+        *)
+            echo "gdb-python: gdb wants '$minor', which this script has no pinned" >&2
+            echo "  stdlib for. Add one to the case above (any patch release of" >&2
+            echo "  that minor works; matching the interpreter removes a variable)." >&2
+            exit 1
+            ;;
+    esac
+    echo "gdb-python: gdb embeds $minor; shipping the $patch stdlib"
+
+    local home="$prefix/lib/nros-$minor"
+    mkdir -p "$home/lib"
+    curl -fL --retry 3 -o py.tgz "https://www.python.org/ftp/python/$patch/Python-$patch.tgz"
+    tar -xzf py.tgz "Python-$patch/Lib" --strip-components=1
+    mv Lib "$home/lib/$minor"
+    rm -rf py.tgz
+
+    # Trim what a debugger's Python never reaches. 46 MB -> ~11 MB on disk.
+    ( cd "$home/lib/$minor" &&
+      rm -rf test idlelib tkinter lib2to3 distutils ensurepip turtledemo \
+             pydoc_data unittest/test venv/scripts )
+
+    # The launcher stays in bin/ and the real binary stays BESIDE it, not in
+    # lib/ where the macOS bundler puts things: gdb derives its
+    # `--data-directory` from its own location, and moving it out of bin/ moves
+    # `share/gdb` out from under it.
+    mv "$gdb" "$gdb.real"
+    cat > "$gdb" <<'WRAP'
+#!/bin/sh
+# nano-ros-sdk launcher (issue 0929) — ARM's gdb embeds a CPython whose baked
+# sys.prefix does not exist here; point it at the stdlib shipped beside it.
+# Set unconditionally: the interpreter needs ITS minor, so honouring a caller's
+# PYTHONHOME for a different Python would restore the crash this exists to fix.
+here="$(cd "$(dirname "$0")" && pwd)"
+PYTHONHOME="$here/../lib/nros-PYMINOR" export PYTHONHOME
+exec "$here/arm-none-eabi-gdb.real" "$@"
+WRAP
+    sed -i "s/nros-PYMINOR/nros-$minor/" "$gdb"
+    chmod +x "$gdb"
+
+    # Prove it, here, where a failure is a build failure rather than a user's
+    # problem. `--version` printing nothing is the exact symptom of 0929.
+    local out
+    out="$(env -u PYTHONHOME -u PYTHONPATH "$gdb" --version 2>&1)" || true
+    case "$out" in
+        *"GNU gdb"*) echo "gdb-python: OK — $(echo "$out" | head -1)" ;;
+        *) echo "gdb-python: gdb still does not run:" >&2
+           echo "$out" | head -5 >&2
+           exit 1 ;;
+    esac
+}
+
 # linux-x86_64 ONLY, and the arm64 exclusion is a finding rather than a
 # shortcut. ARM's aarch64 gdb is linked against `libpython3.8.so.1.0`; Ubuntu
 # 22.04 ships Python 3.10 and has no python3.8 at all, so there is nothing on
@@ -80,6 +167,7 @@ linux-x86_64)
     # with `bundle: cannot resolve libncurses.so.5` after x86_64 had gone green.
     sudo apt-get install -y -qq patchelf libncurses5 libncursesw5 libtinfo5
     bundle_linux_libs "$topdir" "$topdir"/bin/*
+    ship_gdb_python "$topdir"
     ;;
 linux-arm64)
     echo "arm-none-eabi-gcc: linux-arm64 NOT bundled — ARM's aarch64 gdb needs" \
