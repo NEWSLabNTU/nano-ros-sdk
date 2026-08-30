@@ -47,7 +47,18 @@ bundle_linux_libs() {
     local prefix="$1"
     local host_only='^(ld-linux.*|ld64.*|libc|libm|libdl|libpthread|librt|libutil|libnsl|libresolv|libcrypt|libgcc_s|libstdc\+\+|libselinux)\.so'
     shift
-    local bins=("$@")
+    # ELF only. A caller may legitimately pass a whole `bin/`, and a toolchain's
+    # is not uniform: ARM's arm-none-eabi-gcc ships shell wrappers and symlinks
+    # beside the 31 real binaries, and `patchelf` on the first one aborts the
+    # build with `patchelf: not an ELF executable`. Filtering here rather than
+    # in each caller keeps "hand me the directory" the supported shape — the
+    # same reason this walk is a policy and not a name list.
+    local bins=() _f
+    for _f in "$@"; do
+        [ -f "$_f" ] || continue
+        case "$(file -b "$_f")" in *ELF*) bins+=("$_f") ;; esac
+    done
+    [ "${#bins[@]}" -gt 0 ] || { echo "bundle: no ELF binaries among $# argument(s)" >&2; exit 1; }
     local b n soname path real rc=0
     local queue="" seen="" map
 
