@@ -60,8 +60,16 @@ fi
 # launcher, which is proportionate for qemu's handful of `qemu-system-*` and
 # not for a 31-binary toolchain; macOS host support is deferred anyway
 # (nano-ros phase-401 W4).
+# linux-x86_64 ONLY, and the arm64 exclusion is a finding rather than a
+# shortcut. ARM's aarch64 gdb is linked against `libpython3.8.so.1.0`; Ubuntu
+# 22.04 ships Python 3.10 and has no python3.8 at all, so there is nothing on
+# the runner to bundle and nothing a user could `apt install` either. The
+# bundler fails loudly (`bundle: cannot resolve libpython3.8.so.1.0`) rather
+# than shipping a dist that is bundled everywhere except the one library that
+# was unhandled — which is the behaviour we want; it is ARM's packaging that is
+# the problem, not the walk. Tracked in nano-ros issue 0928.
 case "$host" in
-linux-*)
+linux-x86_64)
     sudo apt-get update -qq
     # The bundler can only copy what it can RESOLVE, and ncurses 5 is not on a
     # modern runner either — installing it here is what makes the library
@@ -72,6 +80,10 @@ linux-*)
     # with `bundle: cannot resolve libncurses.so.5` after x86_64 had gone green.
     sudo apt-get install -y -qq patchelf libncurses5 libncursesw5 libtinfo5
     bundle_linux_libs "$topdir" "$topdir"/bin/*
+    ;;
+linux-arm64)
+    echo "arm-none-eabi-gcc: linux-arm64 NOT bundled — ARM's aarch64 gdb needs" \
+         "libpython3.8, absent from 22.04 (nano-ros issue 0928)."
     ;;
 esac
 
