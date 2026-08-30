@@ -66,7 +66,11 @@ linux-*)
     # The bundler can only copy what it can RESOLVE, and ncurses 5 is not on a
     # modern runner either — installing it here is what makes the library
     # available to bundle, not a dependency of the build.
-    sudo apt-get install -y -qq patchelf libncursesw5 libtinfo5
+    # BOTH ncurses 5 spellings: the x86_64 toolchain links the wide build
+    # (`libncursesw.so.5`) and the arm64 one links the narrow (`libncurses.so.5`),
+    # which is not visible from either binary alone and failed the arm64 leg
+    # with `bundle: cannot resolve libncurses.so.5` after x86_64 had gone green.
+    sudo apt-get install -y -qq patchelf libncurses5 libncursesw5 libtinfo5
     bundle_linux_libs "$topdir" "$topdir"/bin/*
     ;;
 esac
