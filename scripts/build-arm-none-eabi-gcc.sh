@@ -26,6 +26,8 @@ esac
 asset="arm-gnu-toolchain-${upstream}-${arch}-arm-none-eabi"
 url="https://developer.arm.com/-/media/Files/downloads/gnu/${upstream}/binrel/${asset}.tar.xz"
 
+. "$(dirname "$0")/lib/bundle.sh"
+
 root="$(pwd)"
 rm -rf "$root/work"
 mkdir -p "$root/dist" "$root/work"
@@ -40,6 +42,34 @@ if [ -z "$topdir" ]; then
     ls -la >&2
     exit 1
 fi
+
+# issue 0928 — ARM links its gdb against ncurses **5**, which Ubuntu 22.04 and
+# later do not ship. So the compiler works and the DEBUGGER does not:
+#
+#   arm-none-eabi-gdb: error while loading shared libraries: libncursesw.so.5
+#
+# A partial breakage reads as "the toolchain installed fine", which is why it
+# went unnoticed until 0926's audit. Measured: of the 31 binaries in bin/, gdb
+# is the ONLY one needing a non-host library, and none carries an existing
+# RUNPATH — so passing the whole directory is safe and keeps the bundler's
+# policy-not-a-name-list property. ARM's own `lib/` holds no `*.so*` directly
+# (its shared objects nest deeper), so the bundler's `$ORIGIN` pass touches
+# only what it copied there.
+#
+# Linux only. The macOS bundler swaps each binary for a DYLD_LIBRARY_PATH
+# launcher, which is proportionate for qemu's handful of `qemu-system-*` and
+# not for a 31-binary toolchain; macOS host support is deferred anyway
+# (nano-ros phase-401 W4).
+case "$host" in
+linux-*)
+    sudo apt-get update -qq
+    # The bundler can only copy what it can RESOLVE, and ncurses 5 is not on a
+    # modern runner either — installing it here is what makes the library
+    # available to bundle, not a dependency of the build.
+    sudo apt-get install -y -qq patchelf libncursesw5 libtinfo5
+    bundle_linux_libs "$topdir" "$topdir"/bin/*
+    ;;
+esac
 
 # Pack the CONTENTS so it unpacks into $NROS_HOME/sdk/arm-none-eabi-gcc/<ver>/.
 tar --use-compress-program "zstd -19 -T0" \

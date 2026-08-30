@@ -10,6 +10,8 @@ host="${2:?usage: build-openocd.sh <version> <host-key> <upstream>}"
 # build-tool.yml. No longer hand-derived from the version label.
 upstream="${3:?usage: build-openocd.sh <version> <host-key> <upstream>}"
 
+. "$(dirname "$0")/lib/bundle.sh"
+
 root="$(pwd)"
 prefix="$root/out/openocd"
 rm -rf "$root/openocd-src" "$prefix"
@@ -20,7 +22,7 @@ case "$host" in
 linux-*)
     sudo apt-get update -qq
     sudo apt-get install -y -qq autoconf automake libtool pkg-config texinfo \
-        libusb-1.0-0-dev libhidapi-dev libftdi-dev zstd
+        libusb-1.0-0-dev libhidapi-dev libftdi-dev zstd patchelf
     ;;
 macos-*)
     brew install libusb hidapi libftdi automake libtool pkg-config texinfo zstd
@@ -42,6 +44,22 @@ cd openocd-src
 make -j"$(getconf _NPROCESSORS_ONLN)"
 make install
 cd "$root"
+
+# issue 0928 — make the dist self-contained, the way qemu has been since 0368
+# F3. This is the STRONGEST case in the tree and not merely an undeclared dep:
+# openocd needs `libftdi.so.1`, which Ubuntu ships as `libftdi1` at version
+# 0.20 — libftdi *0.x*. Its successor installs `libftdi1.so.2` under the
+# confusingly-named `libftdi1-2`, which a normal developer host HAS and which
+# does not satisfy this binary. So the failure is not "install the obvious
+# package"; it is a dead binary on a host that looks like it has the library:
+#
+#   openocd: error while loading shared libraries: libftdi.so.1
+#
+# `libhidapi-hidraw.so.0`, `libusb-1.0.so.0` and `libudev.so.1` ride along.
+case "$host" in
+linux-*) bundle_linux_libs "$prefix" "$prefix"/bin/openocd ;;
+macos-*) bundle_macos_libs "$prefix" "$prefix"/bin/openocd ;;
+esac
 
 tar --use-compress-program "zstd -19 -T0" \
     -cf "dist/openocd-${host}.tar.zst" -C "$prefix" .
