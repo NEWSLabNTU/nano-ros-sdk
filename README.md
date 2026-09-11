@@ -22,6 +22,7 @@ Only **target-agnostic host tools** — the binary distribution matrix is just
 | `openocd` | build from upstream | GPL ✓ |
 | `xrce-agent` | build Micro-XRCE-DDS-Agent (eProsima, superbuild) — the rmw-xrce daemon | Apache ✓ |
 | `cyclonedds` | build `idlc` + `libddsc` from the NEWSLabNTU fork — the rmw-cyclonedds host tools | EPL/EDL ✓ |
+| `play_launch_parser` | `cargo install` from NEWSLabNTU/play_launch (a workspace member; no upstream releases to point at instead — nano-ros issue 1273) | Apache/MIT ✓ |
 
 Libraries + apps (FreeRTOS, lwIP, ThreadX, zenoh-pico, the user's nodes) are
 **not** hosted — they build with the app for the user's chosen target. Vendor
