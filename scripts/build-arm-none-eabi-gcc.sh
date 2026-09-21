@@ -128,14 +128,70 @@ ship_gdb_python() {
         # the 44 lib-dynload modules add the rest; all of them resolve their
         # Python symbols from the shared libpython gdb has already loaded.
         #
-        # A few carry focal-era dependencies jammy does not have —
-        # `_ssl`/`_hashlib` want libssl.so.1.1 — so those imports fail. That is
-        # the normal shape of an optional extension with an unmet dependency,
-        # it is not silent (the ImportError names the library), and a debugger
-        # needs none of them. Bundling libssl 1.1 to fix `import ssl` in gdb
-        # would be shipping a deprecated TLS stack for no user.
+        # The focal-era dependencies jammy does not have. MEASURED (nano-ros
+        # issue 0932's residue, re-measured 2026-09-21 across all 44 modules
+        # rather than the two the old note named):
+        #
+        #   _ctypes   libffi.so.7        not installed on a stock jammy
+        #   _decimal  libmpdec.so.2      NO SUCH PACKAGE on jammy (libmpdec3)
+        #   _hashlib  libcrypto.so.1.1   NO SUCH PACKAGE on jammy (libssl3)
+        #   _ssl      libssl.so.1.1 + libcrypto.so.1.1   likewise
+        #
+        # The other nine externals (bz2, lzma, sqlite3, ncursesw, tinfo,
+        # panelw, readline, db-5.3, uuid) jammy does ship.
+        #
+        # TWO of those four are fixed here and two are not, and the split is a
+        # decision, not a gap:
+        #
+        # * libffi + libmpdec are 35 KB and 215 KB, depend on nothing but the
+        #   libc family, and need at most GLIBC_2.17 — well under this dist's
+        #   2.34 floor, so they cost nothing and move no number. `ctypes` has
+        #   NO pure-Python fallback and is the one a gdb pretty-printer can
+        #   plausibly reach; `decimal` falls back to `_pydecimal` but the
+        #   library is already paid for by being in the same walk.
+        # * libssl/libcrypto 1.1 are NOT bundled, and that is issue 0932's
+        #   standing decision restated rather than revisited: shipping a
+        #   deprecated TLS stack so `import ssl` works INSIDE A DEBUGGER is a
+        #   cost with no user, and the SDK store already declares
+        #   `[prereq.libssl3]` for other tools — two OpenSSL majors in one
+        #   store is a worse outcome than an unimportable `ssl`. The failure
+        #   stays loud: the ImportError names the library.
+        #
+        # WHY NOT RUN lib-dynload THROUGH `bundle_linux_libs` (the policy fix,
+        # which is what this file would prefer). Three measured blockers:
+        #   1. the bundler resolves through `ldd` and `exit 1`s on a soname it
+        #      cannot resolve — and `libmpdec2` and `libssl1.1` are NO SUCH
+        #      PACKAGE on jammy, so they cannot be installed for it to find.
+        #      ncurses5 works as a precedent only because jammy still ships it.
+        #   2. it applies ONE hardcoded `$ORIGIN/../lib` rpath to every root,
+        #      which is right for `bin/` and wrong four directories down.
+        #   3. its verification pass shares that assumption.
+        # Fixing those means changing a helper five dists share to buy two
+        # libraries. So: a short, stated list here, and `verify_gdb_runs`
+        # MEASURES the residue on the runner so this comment cannot drift.
         cp -a "pydeb/x/usr/lib/$minor" "$home/lib/$minor"
+
+        local _dep _dep_url _dep_so
+        for _dep in \
+            "libf/libffi/libffi7_3.3-4_arm64.deb" \
+            "m/mpdecimal/libmpdec2_2.4.2-3_arm64.deb"; do
+            _dep_url="http://ports.ubuntu.com/ubuntu-ports/pool/main/$_dep"
+            curl -fL --retry 3 -o pydeb/dep.deb "$_dep_url"
+            dpkg-deb -x pydeb/dep.deb pydeb/dep
+        done
+        # By SONAME, never by the versioned filename: the loader asks for
+        # `libffi.so.7`, and the file is `libffi.so.7.1.0`.
+        while IFS= read -r _dep_so; do
+            cp -L "$_dep_so" "$prefix/lib/$(patchelf --print-soname "$_dep_so")"
+        done < <(find pydeb/dep -name '*.so.*' -type f)
         rm -rf pydeb
+
+        # UNIFORM over every extension module — no module is named here, so a
+        # future ARM bump that adds one gets the same treatment. lib-dynload
+        # sits at <prefix>/lib/nros-<minor>/lib/<minor>/lib-dynload, so
+        # <prefix>/lib is four levels up. Modules with no bundled dependency
+        # are unaffected by an rpath that resolves nothing.
+        patchelf --set-rpath '$ORIGIN/../../../..' "$home/lib/$minor/lib-dynload"/*.so
         # Resolve libpython from the prefix. Done BEFORE bundle_linux_libs so
         # its `ldd` walk finds the library at all — without this the bundler
         # fails with `cannot resolve libpython3.8.so.1.0`, which is exactly how
@@ -215,7 +271,74 @@ verify_gdb_runs() {
             *) echo "gdb-check: lib-dynload did not load:" >&2
                echo "$out" | head -5 >&2; exit 1 ;;
         esac
+        verify_libdynload_residue "$prefix"
     fi
+}
+
+# nano-ros issue 0932's residue, MEASURED instead of described.
+#
+# The note in `ship_gdb_python` used to say "a few modules carry focal-era
+# dependencies jammy lacks" and name two of them. It was written from reading,
+# it was incomplete (four, not two), and nothing checked it — so it could drift
+# on any ARM bump, in the direction that reads fine.
+#
+# This imports EVERY module in lib-dynload inside the shipped gdb and compares
+# the failing set to the baseline below. A module that starts failing, or one
+# that starts working, both fail the build and print the delta: the point is
+# that the set is a measured fact with a recorded value, not that it is empty.
+#
+# Expected residue, and why each is allowed to stay:
+#   _ssl      libssl.so.1.1 + libcrypto.so.1.1 — deliberately NOT bundled
+#   _hashlib  libcrypto.so.1.1 — same stack, same decision; `hashlib` itself
+#             still imports and falls back to the built-in _md5/_sha1/_sha256
+# Anything else is a regression or a fix, and either way somebody should look.
+GDB_LIBDYNLOAD_BASELINE="_hashlib _ssl"
+
+verify_libdynload_residue() {
+    local prefix="$1"
+    local gdb="$prefix/bin/arm-none-eabi-gdb"
+    local probe out got total
+    probe="$(mktemp -t libdynload-probe.XXXXXX.py)"
+    cat > "$probe" <<'PROBE'
+import os, sys, importlib
+d = os.path.join(sys.prefix, "lib",
+                 "python%d.%d" % sys.version_info[:2], "lib-dynload")
+mods = sorted(f.split(".")[0] for f in os.listdir(d) if f.endswith(".so"))
+bad = []
+for name in mods:
+    try:
+        importlib.import_module(name)
+    except Exception:
+        bad.append(name)
+print("LIBDYNLOAD_TOTAL", len(mods))
+print("LIBDYNLOAD_BAD", " ".join(bad))
+PROBE
+    out="$(env -u PYTHONHOME -u PYTHONPATH "$gdb" --batch -x "$probe" 2>&1)" || true
+    rm -f "$probe"
+
+    total="$(sed -n 's/^LIBDYNLOAD_TOTAL //p' <<<"$out" | head -1)"
+    if [ -z "$total" ]; then
+        echo "gdb-check: the lib-dynload probe produced no verdict — that is a" >&2
+        echo "  FAILURE, not an empty residue. It printed:" >&2
+        echo "$out" | head -10 >&2
+        exit 1
+    fi
+    got="$(sed -n 's/^LIBDYNLOAD_BAD //p' <<<"$out" | head -1)"
+    # Normalise: sorted, single-spaced, so the comparison is about membership.
+    got="$(tr ' ' '\n' <<<"$got" | sed '/^$/d' | sort | tr '\n' ' ')"
+    got="${got% }"
+    if [ "$got" = "$GDB_LIBDYNLOAD_BASELINE" ]; then
+        echo "gdb-check: lib-dynload $total module(s), unimportable = [${got:-none}] (baseline)"
+        return 0
+    fi
+    echo "gdb-check: the lib-dynload residue MOVED." >&2
+    echo "  baseline: [$GDB_LIBDYNLOAD_BASELINE]" >&2
+    echo "  measured: [${got:-none}]  (of $total modules)" >&2
+    echo "" >&2
+    echo "  A module that started failing is a regression; one that started" >&2
+    echo "  working is a fix. Both want a human, and both want this baseline" >&2
+    echo "  updated in the same commit as the change that moved it." >&2
+    exit 1
 }
 
 
