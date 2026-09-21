@@ -27,11 +27,22 @@ set -euo pipefail
 version="${1:?usage: build-play_launch_parser.sh <version> <host-key> <upstream>}"
 host="${2:?usage: build-play_launch_parser.sh <version> <host-key> <upstream>}"
 # Commit SHA on NEWSLabNTU/play_launch's `main` — SSOT is nano-ros's index
-# [tool.play_launch_parser].upstream, passed by build-tool.yml. Keep this in
-# lockstep with nano-ros's `packages/cli/third-party/play_launch` submodule
-# pin: the two must name the SAME commit, or the binary this dist ships and the
-# library `nros-launch-resolve` links diverge (the exact drift class issue
-# 1273's own history section — the pre-828 archived-repo pin — was retired for).
+# [tool.play_launch_parser].upstream, passed by build-tool.yml.
+#
+# THIS IS NOT REQUIRED TO EQUAL nano-ros's `packages/cli/third-party/play_launch`
+# submodule pin, and the sentence that used to sit here said it was (nano-ros
+# issue 1413). It went unmeasured on both sides and drifted ~40 commits. The
+# relationship that IS required — the index may LAG the gitlink, never lead it,
+# and a lag must be declared beside the index entry — is measured over there by
+# `check-play-launch-parser-ref`, not asserted here.
+#
+# Why they differ right now: nano-ros issue 0897 moved pyo3 out of the
+# `play_launch_parser` crate, so at the gitlink this CLI has no Python backend —
+# `.launch.py` hard-errors and `$(eval …)` exits 0 with the substitution
+# UNEXPANDED. `838ce948` is the newest commit whose `cargo install` yields a
+# Python-capable binary, so that is what this dist is cut from until the CLI
+# registers a `pyload` backend and ships `libplay_launch_parser_pyexec.so`
+# beside itself.
 upstream="${3:?usage: build-play_launch_parser.sh <version> <host-key> <upstream>}"
 
 root="$(pwd)"
